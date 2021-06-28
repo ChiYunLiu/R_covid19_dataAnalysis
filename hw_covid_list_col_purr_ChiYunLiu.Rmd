@@ -1,0 +1,463 @@
+---
+title: "STAT 413/613: HW on List Columns and  COVID19"
+author: "Chi-Yun Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 4
+    number_sections: yes
+    theme: cerulean
+  pdf_document:
+    toc: yes
+    number_sections: yes
+    toc_depth: '4'
+params:
+  solutions: FALSE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.align  = "center",
+                      fig.height = 5, 
+                      fig.width  = 6)
+```
+
+# Instructions {-}
+1. Clone this homework repo to your homework directory as a new repo.
+2. Rename the starter file under the analysis directory as `hw_01_yourname.Rmd` and use it for your solutions.   
+3. Modify the "author" field in the YAML header.  
+4. Stage and Commit R Markdown and HTML files (no PDF files).   
+5. **Push both .Rmd and HTML files to GitHub**.   
+- Make sure you have knitted to HTML prior to staging, committing, and pushing your final submission.  
+6. **Commit each time you answer a part of question, e.g. 1.1**   
+7. **Push to GitHub after each major question**   
+8. When complete, submit a response in Canvas   
+    
+- Only include necessary code to answer the questions.
+- Most of the functions you use should be from the tidyverse. Unnecessary Base R or other packages not covered in class will result in point deductions.
+- Use Pull requests and or email to ask me any questions. If you email, please ensure your most recent code is pushed to GitHub.  
+
+- **Learning Outcome**
+  + Use tidyverse functions to create, clean, tidy, and manipulate data frames in a list column
+  + Apply purrr functions when working with list columns
+  + Employ joins to manipulate data from multiple data frames  
+
+- **Context** 
+  + This assignment looks at COVID-19 data based on the most recent data as of the date you do the work.
+
+
+# Load global and US confirmed cases and deaths data into a nested data frame
+1. Create a variable called `url_in` to store this URL: "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/". This allows you do directly download the files at the John's Hopkins site:  "https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data/csse_covid_19_time_series"
+```{r message=FALSE}
+library(tidyverse)
+library(broom)
+```
+
+```{r}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+```
+
+2. Create a tibble named `df` with a variable called `file_names` with a row for each of the following four file names to be loaded from the URL:
+    + time_series_covid19_confirmed_global.cs
+    + time_series_covid19_deaths_global.csv
+    + time_series_covid19_confirmed_US.csv
+    + time_series_covid19_deaths_US.csv
+    
+```{r}
+df <- tibble(file_names = c("time_series_covid19_confirmed_global.csv", "time_series_covid19_deaths_global.csv",
+                            "time_series_covid19_confirmed_US.csv", "time_series_covid19_deaths_US.csv"))
+```
+    
+3. Create a variable in the data frame called `url` that puts `url_in` on the front of each file_name to create a complete URL.
+```{r}
+df %>% 
+  mutate(url = str_c(url_in, file_names, sep = ""))-> df
+df
+```
+
+4. Use `mutate()` with `map()` to create a list column called `data` with each row holding the downloaded data frame for each file name
+```{r}
+df %>% 
+  mutate(data = map(url, ~read_csv(.)))->df
+df
+```
+
+5. Add a factor variable to `df` called `"`case_type`"` with the **unique** portions of the file names.
+```{r}
+# Reference
+# https://www.itread01.com/content/1548936390.html
+# https://evoldyn.gitlab.io/evomics-2018/ref-sheets/R_strings.pdf
+df %>% 
+  mutate(case_type = as.factor(str_extract(file_names, "[a-z]*[:punct:][gU][a-zA-Z]*")))->df
+df
+```
+6. Remove any columns other than `case_types` and `data` from `df`.
+- `df` should have four observations of two variables.
+```{r}
+df %>% 
+  select(-file_names, -url)->df
+df
+```
+
+# Clean Data  
+1. Using a single call to `map()`, add only the first 15 names from each of the four data frames to a new variable in `df` called `vars`.
+ - Visually compare them to identify issues across the rows.
+```{r}
+df %>% 
+  mutate(vars = map(data, names)) %>% 
+  mutate(vars = map(vars, ~unlist(.)[1:15])) ->df
+df
+# Visually compare them 
+map(df$vars, ~unlist(.)[1:15])
+# df$data
+# df$vars
+```
+ 
+2. Use a purrr function for each of the following steps (except a) to fix any issues and create consistent data frames.  
+a. Create a short helper function called `fix_names()` which takes three arguments: a data frame, a string pattern, and a string "replacement pattern". It should replace all occurrences of the "string pattern" in the names of the variables in the data frame with the "replacement pattern". Include error checking to ensure the inputs are of the proper class.
+
+```{r}
+fix_names <- function(df, strP, repP){
+  stopifnot(is.data.frame(df), is.character(strP), is.character(repP))
+  names(df) <- str_replace_all(names(df), strP, repP)
+  return(df)
+}
+```
+
+b. Use your function with `map()` to convert "Province/State" and "Country/Region" to "Province_State" "Country_Region" .
+c. Use your function with `map()` to convert "Admin2 to "County" and "Long_" to "Long".
+d. Use a purrr function to remove the variables "UID", "iso2", "iso3", "code3", "FIPS", and "Combined_Key" from only the US data.
+e. Use a purrr function to add variables `Population` and `County` to the data frames where missing.
+f. Use a purrr function to add variable called `Country_State` that combines the country with the province/state while keeping the original columns.
+```{r}
+df %>%
+  mutate(data = map(data, ~fix_names(., "([ey])/", "\\1_")), # b
+         data = map(data, ~fix_names(., "Admin2", "County")), # c
+         data = map(data, ~fix_names(., "Long_", "Long")), # c
+         data = map_if(data, str_detect(df$case_type, "US"),
+                       ~select(., -c("UID", "iso2", "iso3", "code3", "FIPS", "Combined_Key"))), # d
+         data = map_if(data, str_detect(df$case_type,"global"), ~mutate(., Population = 0)),
+         data = map_if(data, str_detect(df$case_type, "global"), ~mutate(., County = "NA")),
+         data = map_if(data, str_detect(df$case_type, "confirmed_US"), ~mutate(., Population = 0)),# e
+         data = map(data, ~unite(., "Country_State", c("Country_Region", "Province_State"), sep = "_", remove = FALSE, na.rm = TRUE)),
+         data = map_if(data, str_detect(df$case_type, "global"), ~select(.,"Population", "County", everything())),
+         data = map_if(data, str_detect(df$case_type, "US"), ~select(.,"Population", "County", everything()))
+  ) ->df #f
+df
+```
+
+g. Update the values in `df$vars` with the new first 15 names and show the values to check for consistency in each pair of rows.
+- Hint: Look at help for `map_if()`
+
+```{r}
+df %>% 
+  mutate(vars = map(data, names)) %>% 
+  mutate(vars = map(vars, ~unlist(.)[1:15])) ->df
+df$vars
+#df$data #---> check data
+```
+
+# Tidy each dataframe 
+1. Use `map()` along with `pivot_longer()` to tidy each data frame.
+- As part of the pivot, ensure the daily values are in a variable called "`Date`" and use a lubridate function *inside the pivot* to ensure it is of class `date`.
+2. Save the new data frame to a variable called `df_long`
+```{r message=FALSE}
+# reference:
+# https://tidyr.tidyverse.org/articles/pivot.html
+# https://dplyr.tidyverse.org/reference/select.html
+library(lubridate)
+df %>% 
+  mutate(data = map(data, ~pivot_longer(data = ., cols = matches("\\/"), names_to = "Date", values_to = "daily_values", names_transform = list(Date = mdy))))->df_long
+df_long
+#df$data # ---> check data 
+```
+
+
+# Add Continents 
+1.  Use `map()` to add a new variable called `Continent` to each data frame.  
+- Hint: use the package {countrycode} to get the continents.
+- If you don't have it already, use the console to install. 
+- Then load package {countrycode} and look at help for `countrycode::countrycode`
+- You will get some warning messages about NAs which you will fix next.
+```{r}
+# reference:
+# https://github.com/vincentarelbundock/countrycode
+# https://rdocumentation.org/packages/countrycode/versions/1.2.0/topics/countrycode
+library(countrycode)
+df_long %>% 
+  mutate(data = map(data, ~mutate(., Continent = countrycode(Country_Region, "country.name", "continent"))))->df_long
+#df$data
+```
+
+# Fix NAs for Continents
+- Use `map()` with `case_when()` to replace the NAs due to "Diamond Princess", "Kosovo", "MS Zaandam" and Micronesia, with the most appropriate continent
+- Use `map()` with `unique()` to confirm five continents in the global data frames and one in the US data frames
+
+```{r}
+# information from wikipedia
+# Diamond Princess ---> cruises operating in Asia
+# Kosovo ---> Republika e Kosoves in Europe
+# MS Zaandam ---> Cruises operating in Europe
+# Micronesia ---> Federated States of Micronesia in Oceania
+# df$data[[1]] %>% filter(Country_Region == "Diamond Princess") ---> check NA value
+
+df_long %>% 
+  mutate(data = map(data, ~mutate(., Continent = case_when(Country_Region == "Diamond Princess" ~ "Asia",
+                                                           Country_Region == "Kosoves" ~ "Europe",
+                                                           Country_Region == "MS Zaandam" ~ "Europe",
+                                                           Country_Region == "Micronesia" ~"Oceania",
+                                                           TRUE ~ Continent))))->df_long
+map(df_long$data, ~unique(.$Continent))
+```
+
+# Unnest the Data Frames    
+1. Unnest and ungroup the data frame `df_long` and save into a new data frame called `df_all`
+```{r}
+df_long %>% 
+  unnest(cols = data) %>% 
+  ungroup()->df_all
+df_all
+```
+
+2. Remove original `df` and `df_long` dataframes from the environment
+```{r}
+# reference
+# http://datasharkie.com/how-to-remove-data-frame-in-r
+remove(df,df_long)
+```
+
+3. Remove the `vars` variable from df_all
+```{r}
+df_all %>% 
+  select(-vars)->df_all
+df_all
+```
+
+
+
+# Get World Population Data
+1.a.  Use a readr function and relative path to read in the .csv with World population data for 2019 into its own data frame called `df_pop`.  
+
+  - The data is from the [UN](https://population.un.org/wpp/Download/Standard/CSV/) which uses different country names in many cases from the COVID data. It also uses a different structure for separating countries and territories.  
+  - The CSV has been adjusted to match the COVID data country names in many cases, e.g., US, and Iran.  
+  - Note: the UN population data is in thousands so it can have fractional values. 
+```{r}
+df_pop <- read_csv("./data/WPP2019_TotalPopulation.csv")
+df_pop
+```
+  
+1.b. Identify the countries in the Covid data that are not in the population data. 
+```{r}
+setdiff(df_all$Country_Region, df_pop$Location)
+```
+
+1.c. Identify the countries in the population data that are not in the covid data. How many are there?  
+```{r}
+setdiff(df_pop$Location, df_all$Country_Region) -> not_in_covid
+not_in_covid
+# 46 countries in there
+```
+
+1.d. What is the percentage of the world population contained in these countries? 
+
+  - Since the percentage is small, we will remove them from the subsequent analysis.
+```{r}
+df_pop %>% 
+  filter(Location %in% not_in_covid) %>% 
+  summarise(not_in_covid_total = sum(PopTotal)*1000)->sum_not_in_covid
+
+df_pop %>% 
+  summarise(world_pop = sum(PopTotal)*1000)->world_total_pop
+
+sum_not_in_covid/world_total_pop
+# Around 6 % of the world population contained in these countries
+```
+  
+2. Use a dplyr join to remove all Locations that are not in the `df_all` data frame.
+```{r}
+semi_join(df_pop, df_all, by = c("Location" = "Country_Region"))->df_pop
+df_pop
+```
+
+3. Use a dplyr function to add the ranks for each location for population and population density to `df_pop` where the country with the largest value is number 1 for that variables. Show the top 10 countries for Population and for population density.
+  + Calculate the ranks using a method where if `n` countries are tied at the same rank, the next rank is `n` greater than the rank with if the ties. As an example, if two countries are tied at 2, the next non-tied country has rank 4.
+```{r}
+# reference
+# https://www.datasciencemadesimple.com/rank-function-in-r/
+# https://stackoverflow.com/questions/26423493/r-rank-largest-to-smallest/26423543
+df_pop %>% 
+  mutate(rank_p = rank(-PopTotal, na.last = TRUE, ties.method = "min"),
+         rank_d = rank(-PopDensity, na.last = TRUE, ties.method = "min")) ->df_pop
+df_pop %>% 
+  arrange(rank_p) %>% 
+  slice_head(n = 10) %>% 
+  select(Location,PopTotal,rank_p)
+
+df_pop %>% 
+  arrange(rank_d) %>% 
+  slice_head(n = 10) %>% 
+  select(Location, PopDensity, rank_d)
+```
+
+4. Create an appropriate plot and then test to assess if there is a linear relationship between ranks for Total Population and Population Density. Interpret the plot and interpret the output from the model in terms of `$p$` value and adjusted R-squared.
+
+```{r}
+ggplot(data = df_pop) +
+  geom_point(aes(x = rank_p, y = rank_d))+
+  geom_smooth(method = lm, mapping = aes(x = rank_p, y = rank_d),formula = y ~x, se = FALSE) +
+  ggtitle("Ranks for Total Population and Popluation Density")
+cor(df_pop$rank_p, df_pop$rank_d)
+summary(lm(rank_d ~ rank_p, data = df_pop))
+```
+
+- As the plot above, the points are spreading around the regression line without a linear pattern. In other words, there is no linear relationship between ranks for Total Population and Population Density. We can also see a result of the correlation coefficient test. The correlation between rank_p and rank_d is -0.05234718. It a negatively related. For the linear relationship, the larger the absolute value of r, the stronger the linear association.  Hence, the linear association is weak here since the absolute value of r is only 0.052. 
+
+- In addition, based on the summary table, we can see that the p-value 0.4744 at the 5% level is greater than .05. Therefore, we fail to reject the null hypothesis. The model is not significant. Adjusted R-squared -0.002593 means the model has a poor fit. In other words, the model is not good to explain the variation of the response variable y(rank_p).  
+
+# Add Population Data to `df_all`
+- Use a dplyr join to add the data from `df_pop` to `df_all` to create `df_allp`
+- This means there will be two columns with population data:
+  + `Population` for US Counties
+  + `PopTotal` for the country level
+```{r}
+df_all %>%
+  left_join(df_pop, by = c("Country_Region" = "Location")) %>% 
+  select(Population, PopTotal, everything())->df_allp
+df_allp
+
+```
+  
+# How many Country Regions have Multiple Country States?
+- Calculate the number of Country States for each Country Region
+- Show in descending order of the number of Country_States by Country_Region.
+```{r}
+df_allp %>% 
+  group_by(Country_Region) %>% 
+  summarise(num_state = n_distinct(Country_State)) %>% 
+  arrange(desc(num_state))
+# 8 Country Regions have Multiple Country States
+```
+
+# Analyse Data
+1. Create a data frame by with data grouped by `Country_Region`, `Continent` `case_type`, `rank_p` and `rank_d` that summarizes the current totals and the totals as a percentage of total population.
+  - Be sure to look at how the data is reported so the numbers make sense.
+```{r message=FALSE}
+df_allp %>% 
+  group_by(Country_Region, Continent, case_type, rank_p, rank_d) %>% 
+  summarise(current_totals = max(daily_values),
+            total_percent = current_totals/ (last(PopTotal)*1000)*100) -> df_allp01
+df_allp01
+```
+  
+2. What are the 20 Countries with the most confirmed cases and what is the percentage of their total population affected?
+```{r}
+df_allp01 %>% 
+  ungroup() %>% 
+  filter(case_type == "confirmed_global") %>% 
+  arrange(desc(current_totals)) %>% 
+  slice_head(n = 20)->df_allp02
+df_allp02
+```
+
+3. What are the 20 Countries with the most deaths and what is the percentage of their total population affected?
+```{r}
+df_allp01 %>% 
+  ungroup() %>% 
+  filter(case_type == "deaths_global") %>% 
+  arrange(desc(current_totals)) %>% 
+  slice_head(n = 20)->df_allp03
+df_allp03
+```
+
+4. Describe the results based on the totals with the rankings for total population and population density.
+
+- The US has the most confirmed cases and death cases, but the US does not have the most total population in the world and the highest population density in the world. The rank of the total population for India is world number two and the rank of the population density is number 17, which all in front of the US, but India does not have many confirmed and death cases than the US. Most of the countries in the top 20 confirmed cases and death cases countries have a higher total population, but not all of these countries have a high population density.
+
+# Which countries in the top 20 for percentage of population for cases are Not in the top 20 for the absolute number of cases.  Which countries in the top 20 for percentage of population for deaths are Not in the top 20 for the absolute number deaths?
+- Describe the results based on the per population results with the rankings for total population and population density.
+
+```{r}
+df_allp01 %>% 
+  ungroup() %>% 
+  filter(case_type == "confirmed_global") %>% 
+  arrange(desc(total_percent)) %>% 
+  slice_head(n = 20)->df_allp04
+
+setdiff(df_allp04, df_allp02)
+
+df_allp01 %>%
+  ungroup() %>% 
+  filter(case_type == "deaths_global") %>% 
+  arrange(desc(total_percent)) %>% 
+  slice_head(n = 20)->df_allp05
+
+setdiff(df_allp05, df_allp03)
+```
+
+# Create two plots, one for the number of cases and one for the number of deaths over time for the top 20 country/region showing each country and faceting by continent with the same scale for the y axis. 
+- Use appropriate scales for the axes.
+- Create two sets of plots
+- Interpret each plot with respect to the total cases/deaths and the path of cases/deaths across different continents.
+
+```{r fig.width= 14, fig.asp=0.618}
+df_allp02 %>% 
+  ggplot(aes(x = log(current_totals), y = Country_Region)) +
+  geom_col() +
+  facet_grid(Continent ~ .) +
+  ggtitle("The Number of Covid Confirmed cases for the Top 20 Country/Region")
+```
+
+- As the plot for the total cases above, we can see that the country which has the most cases is in the US, but based on the continent, Europe has the most countries facing a serious situation since 9 countries out of 20 having the most severe countries are in Europe. Also, based on the continent, Europe is the most severe region, America follows the Euro, and then is Asia. Africa only one country has included in the top 20.
+
+```{r fig.width= 14, fig.asp=0.618}
+df_allp03 %>% 
+  ggplot(aes(x = log(current_totals), y = Country_Region)) +
+  geom_col() +
+  facet_grid(Continent ~ .) +
+  ggtitle("The Number of Covid Deaths cases for the Top 20 Country/Region")
+```
+
+- We can see that Mexico has a similar number of the confirmed cases with Peru in the plot of the total case. However, Mexico has a higher number of death cases than Peru based on the death cases plot above. Also, we see that Turkey has a higher number of confirmed cases but the number of deaths cases is relatively less. Lastly, the overall trend of the number of death is similar to the number of confirmed cases. The higher confirmed cases the country has, the higher death cases the country has. Europe also has the most countries in the top 20 countries with the most deaths cases in the world
+
+# Analyze US States Deaths **Extra Credit**
+
+1. Create a data frame with the total deaths and deaths per population for those US states with more than 0 deaths and more than 0 population.
+```{r}
+df_allp %>% 
+  group_by(Country_State, case_type) %>% 
+  summarise(current_totals = max(daily_values),
+            total_percent = current_totals/(last(PopTotal)*1000)*100) %>% 
+  filter(case_type == "deaths_US", current_totals > 0) ->df_allp04
+df_allp04
+```
+
+
+2. Use an appropriate plot to assess for a linear relationship between total deaths and deaths per population using log scales for x and y axes. Interpret the plot.
+
+```{r}
+df_allp04 %>% 
+  ggplot(aes(x = current_totals, y = total_percent))+
+  geom_point()+
+  scale_x_log10()+
+  scale_y_log10()+
+  geom_smooth(method = lm, formula = y ~ x, se = FALSE)+
+  ggtitle("Total Deaths versus Deaths per Popoulation")+
+  xlab("Deaths per Population(log)") +
+  ylab("Total Deaths(log)")
+```
+- As the plot above, the points are spreading as a straight line clearly. It means total deaths and deaths per population have a perfect linear association. Also, the spreading trend of the points is going from the left bottom to the right top which means total deaths and deaths per population are positively related.
+
+3. Run a linear model to test for a linear relationship and interpret the results in terms of p value, adjusted R-squared and a plot of the residuals.
+
+```{r}
+summary(lm(total_percent ~ current_totals, data = df_allp04))
+```
+
+* Since the p-value is extremely small here (<2.2e-16), the model is significant. Adjusted R-squared equals 1 which is a perfect model. The model almost explains all of the variations in the response variable. However, it barely happened in the real world.  
+
+
+
+
+
+
+
